@@ -33,7 +33,25 @@ app.get('/api/status', (_req, res) => {
   });
 });
 
-// تحسين الصورة + تغيير الخلفية (Photoroom)
+// ترجمة وصف الخلفية للإنجليزية (واجهة Photoroom تفهم الإنجليزية فقط)
+async function toEnglish(text) {
+  if (!text || !/[^\x00-\x7F]/.test(text) || !ANTHROPIC_API_KEY) return text;
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 100,
+        messages: [{ role: 'user', content: 'Translate this background description to a short English image-generation prompt. Reply with the prompt only:\n' + text }],
+      }),
+    });
+    const d = await r.json();
+    return d.content?.[0]?.text?.trim() || text;
+  } catch { return text; }
+}
+
+// تحسين الصورة + تغيير الخلفية (Photoroom Image Editing API)
 app.post('/api/enhance', upload.single('image'), async (req, res) => {
   try {
     if (!need(res, PHOTOROOM_API_KEY, 'PHOTOROOM_API_KEY')) return;
@@ -41,24 +59,28 @@ app.post('/api/enhance', upload.single('image'), async (req, res) => {
 
     const { background = 'remove', prompt = '' } = req.body;
     const form = new FormData();
-    form.append('imageFile', new Blob([req.file.buffer], { type: req.file.mimetype }), 'image.png');
-    form.append('outputSize', 'hd');
+    form.append('imageFile', new Blob([req.file.buffer], { type: req.file.mimetype || 'image/png' }), 'image.png');
 
-    let url;
-    if (background === 'remove') {
-      // إزالة الخلفية فقط (خلفية شفافة) مع تحسين الجودة
-      url = 'https://sdk.photoroom.com/v1/segment';
-    } else {
-      // خلفية جديدة: لون أو وصف نصي يولده الذكاء الاصطناعي
-      url = 'https://image-api.photoroom.com/v2/edit';
-      if (background === 'ai') form.append('background.prompt', prompt || 'luxury studio background, soft light');
-      else form.append('background.color', background.replace('#', ''));
-      form.append('lighting.mode', 'ai.auto');
-      form.append('padding', '0.1');
+    // إزالة الخلفية هي السلوك الافتراضي للواجهة؛ نضيف الخلفية الجديدة فقط عند الطلب
+    if (background === 'ai') {
+      const en = await toEnglish(prompt || 'luxury studio background, soft light');
+      form.append('background.prompt', en);
+    } else if (background !== 'remove') {
+      form.append('background.color', background.replace('#', ''));
     }
+    if (background !== 'remove') form.append('lighting.mode', 'ai.auto');
+    form.append('padding', '0.1');
 
-    const r = await fetch(url, { method: 'POST', headers: { 'x-api-key': PHOTOROOM_API_KEY }, body: form });
-    if (!r.ok) return res.status(502).json({ error: `فشل معالجة الصورة (${r.status})`, detail: await r.text() });
+    const r = await fetch('https://image-api.photoroom.com/v2/edit', {
+      method: 'POST',
+      headers: { 'x-api-key': PHOTOROOM_API_KEY, Accept: 'image/png' },
+      body: form,
+    });
+    if (!r.ok) {
+      const detail = (await r.text()).slice(0, 300);
+      console.error('Photoroom error', r.status, detail);
+      return res.status(502).json({ error: `فشل معالجة الصورة (${r.status}): ${detail}` });
+    }
 
     const buf = Buffer.from(await r.arrayBuffer());
     const type = r.headers.get('content-type') || 'image/png';
