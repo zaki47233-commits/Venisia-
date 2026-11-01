@@ -34,6 +34,26 @@ function setImage(url) {
   $('resetBtn').style.display = state.current !== state.original ? 'inline-block' : 'none';
 }
 
+// تصغير الصورة قبل إرسالها لاقتراح النص (حد واجهة Claude 5MB)
+function shrink(dataUrl, max = 1024) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 async function api(path, options) {
   const r = await fetch(path, options);
   let data = {};
@@ -97,7 +117,7 @@ $('captionBtn').addEventListener('click', async () => {
     const data = await api('/api/caption', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: state.current, language: $('lang').value, tone: $('tone').value, topic: $('topic').value }),
+      body: JSON.stringify({ image: await shrink(state.current), language: $('lang').value, tone: $('tone').value, topic: $('topic').value }),
     });
     $('sugs').innerHTML = '';
     (data.suggestions || []).forEach((s) => {
